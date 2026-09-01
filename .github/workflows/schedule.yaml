@@ -1,0 +1,14 @@
+name: Release on schedule
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Every sunday at 00:00 UTC
+
+jobs:
+  schedule:
+    permissions:
+      contents: read
+      packages: write
+    uses: $/.github/workflows/common.yaml
+    with:
+      compare-ca-certificates: true

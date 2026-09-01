@@ -1,0 +1,114 @@
+name: common
+
+on:
+  workflow_call:
+    inputs:
+      compare-ca-certificates:
+        description: 'compare ca certificates'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: juli3nk/static
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Generate image tags
+        id: tag
+        run: |
+          DATE_TAG=$(date +%Y%m%d)
+          echo "date_tag=$DATE_TAG" >> $GITHUB_OUTPUT
+          echo "image_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${DATE_TAG}" >> $GITHUB_OUTPUT
+          echo "latest_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image locally
+        if: ${{ inputs.compare-ca-certificates }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: local-static:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Get local ca-certificates hash
+        if: ${{ inputs.compare-ca-certificates }}
+        id: local_hash
+        run: |
+          CID=$(docker create local-static:latest true)
+          docker cp "$CID:${{ env.CA_FILE }}" /tmp/local-ca.crt
+          docker rm "$CID"
+          HASH=$(sha256sum /tmp/local-ca.crt | awk '{ print $1 }')
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "Local ca-certificates hash: $HASH"
+
+      - name: Get remote ca-certificates hash
+        if: ${{ inputs.compare-ca-certificates }}
+        id: remote_hash
+        run: |
+          REMOTE_IMAGE="${{ steps.tag.outputs.latest_tag }}"
+          if docker pull "$REMOTE_IMAGE" >/dev/null 2>&1; then
+            CID=$(docker create "$REMOTE_IMAGE")
+            docker cp "$CID:${{ env.CA_FILE }}" /tmp/remote-ca.crt
+            docker rm "$CID"
+            HASH=$(sha256sum /tmp/remote-ca.crt | awk '{ print $1 }')
+            echo "hash=$HASH" >> $GITHUB_OUTPUT
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Remote ca-certificates hash: $HASH"
+          else
+            echo "hash=" >> $GITHUB_OUTPUT
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Remote image does not exist yet."
+          fi
+
+      - name: Compare and decide to push
+        id: compare
+        run: |
+          if [ "${{ inputs.compare-ca-certificates }}" == "false" ]; then
+            echo "push=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          LOCAL="${{ steps.local_hash.outputs.hash }}"
+          REMOTE="${{ steps.remote_hash.outputs.hash }}"
+          EXISTS="${{ steps.remote_hash.outputs.exists }}"
+          echo "Local:  $LOCAL"
+          echo "Remote: $REMOTE"
+          if [ "$EXISTS" = "true" ] && [ "$LOCAL" = "$REMOTE" ]; then
+            echo "ca-certificates has not changed. Skipping push."
+            echo "push=false" >> $GITHUB_OUTPUT
+          else
+            echo "ca-certificates has changed or image does not exist. Pushing."
+            echo "push=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push Docker image
+        if: steps.compare.outputs.push == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image_tag }}
+            ${{ steps.tag.outputs.latest_tag }}
+          cache-from: type=gha
