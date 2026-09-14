@@ -12,6 +12,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: juli3nk/static
+  CA_FILE: '/etc/ssl/certs/ca-certificates.crt'
 
 jobs:
   build-and-push-image:
@@ -69,7 +70,7 @@ jobs:
         run: |
           REMOTE_IMAGE="${{ steps.tag.outputs.latest_tag }}"
           if docker pull "$REMOTE_IMAGE" >/dev/null 2>&1; then
-            CID=$(docker create "$REMOTE_IMAGE")
+            CID=$(docker create "$REMOTE_IMAGE" true)
             docker cp "$CID:${{ env.CA_FILE }}" /tmp/remote-ca.crt
             docker rm "$CID"
             HASH=$(sha256sum /tmp/remote-ca.crt | awk '{ print $1 }')
